@@ -1,0 +1,6 @@
+{
+  "name": "StudySuki AI",
+  "description": "Premium adaptive learning companion with procedural dialect roadmaps, 14 massive historical manuscript Spirit Summons, and licensed FIDE chess gameplay.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
