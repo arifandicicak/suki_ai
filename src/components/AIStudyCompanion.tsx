@@ -88,8 +88,8 @@ export default function AIStudyCompanion({ activeLesson, userExp, userPicture }:
       {/* Companion Title Header */}
       <div className="bg-stone-50 px-5 py-4 border-b border-stone-200 flex items-center justify-between">
         <div className="flex items-center gap-2.5">
-          <div className="bg-emerald-50 p-2 rounded-xl text-emerald-800 border border-emerald-100">
-            <GraduationCap className="w-5 h-5" />
+          <div className="w-9 h-9 rounded-xl overflow-hidden shadow-sm">
+            <img src="/logo.png" alt="StudySuki Logo" className="w-full h-full object-contain bg-white" />
           </div>
           <div>
             <div className="flex items-center gap-1.5">
@@ -113,8 +113,8 @@ export default function AIStudyCompanion({ activeLesson, userExp, userPicture }:
           return (
             <div key={idx} className={`flex gap-2.5 ${isAI ? "justify-start" : "justify-end"}`}>
               {isAI && (
-                <div className="w-8 h-8 rounded-full bg-stone-100 border border-stone-200 shrink-0 flex items-center justify-center text-emerald-750 shadow-sm">
-                  <GraduationCap className="w-4 h-4" />
+                <div className="w-8 h-8 rounded-full overflow-hidden shrink-0 shadow-sm border border-stone-200">
+                  <img src="/logo.png" alt="Suki Logo" className="w-full h-full object-contain bg-white" />
                 </div>
               )}
               
@@ -150,8 +150,8 @@ export default function AIStudyCompanion({ activeLesson, userExp, userPicture }:
 
         {loading && (
           <div className="flex gap-2.5 justify-start">
-            <div className="w-8 h-8 rounded-full bg-stone-100 border border-stone-200 shrink-0 flex items-center justify-center text-emerald-650 animate-pulse">
-              <GraduationCap className="w-4 h-4" />
+            <div className="w-8 h-8 rounded-full overflow-hidden shrink-0 shadow-sm border border-stone-200 animate-pulse">
+              <img src="/logo.png" alt="Suki Logo" className="w-full h-full object-contain bg-white" />
             </div>
             <div className="bg-stone-50 border border-stone-150 text-stone-800 rounded-2xl rounded-tl-none px-4 py-3 text-xs shadow-sm flex items-center gap-2">
               <RefreshCw className="w-3.5 h-3.5 text-emerald-600 animate-spin" />

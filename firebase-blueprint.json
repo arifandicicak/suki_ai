@@ -1,0 +1,57 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile and statistics",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "The unique identifier for the user"
+        },
+        "name": {
+          "type": "string",
+          "description": "User's display name"
+        },
+        "email": {
+          "type": "string",
+          "description": "User's email address"
+        },
+        "exp": {
+          "type": "integer",
+          "description": "Total EXP points earned"
+        },
+        "streak": {
+          "type": "integer",
+          "description": "Current daily streak"
+        },
+        "completedLessons": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "List of completed lesson keys"
+        },
+        "chessHistory": {
+          "type": "array",
+          "description": "Last 5 chess matches"
+        },
+        "readBooksCount": {
+          "type": "integer",
+          "description": "Total books read"
+        },
+        "lastCheckIn": {
+          "type": "integer",
+          "description": "Timestamp of last check-in"
+        },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "email"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "User",
+      "description": "User profiles and learning progress"
+    }
+  }
+}

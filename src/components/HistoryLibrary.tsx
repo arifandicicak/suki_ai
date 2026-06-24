@@ -1,6 +1,6 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { WORLD_HISTORY_ARCHIVE, HistoricalBook } from "../data/languagesData";
-import { Book, Bookmark, History, Calendar, Feather, Search, X, BookOpen, Clock, Award, Sparkles } from "lucide-react";
+import { Book, Bookmark, History, Calendar, Feather, Search, X, BookOpen, Clock, Award, Sparkles, Check } from "lucide-react";
 
 const getHistoricalFigure = (bookId: string): string => {
   const mapping: Record<string, string> = {
@@ -30,6 +30,25 @@ export default function HistoryLibrary() {
   const [searchTerm, setSearchTerm] = useState("");
   const [activeEraFilter, setActiveEraFilter] = useState<"All" | "Kuno" | "Pertengahan" | "Modern">("All");
   const [currentPage, setCurrentPage] = useState(0);
+
+  const [readBookIds, setReadBookIds] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("suki_read_books") || "[]");
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    const handleSync = () => {
+      try {
+        const arr = JSON.parse(localStorage.getItem("suki_read_books") || "[]");
+        setReadBookIds(arr);
+      } catch {}
+    };
+    window.addEventListener("suki_stats_updated", handleSync);
+    return () => window.removeEventListener("suki_stats_updated", handleSync);
+  }, []);
 
   // Parse detailedContent into separate page-turner batches
   const getPages = (content: string) => {
@@ -332,6 +351,35 @@ export default function HistoryLibrary() {
                 <p className="text-[8px] text-stone-400 font-mono mt-1 text-center">
                   Saluran Obrolan Interaktif via Gemini AI
                 </p>
+              </div>
+
+              {/* Read completion button */}
+              <div className="mt-4 w-full select-none border-t border-stone-200/50 pt-4">
+                {readBookIds.includes(selectedBook.id) ? (
+                  <div className="w-full py-2.5 px-3 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-xl flex items-center justify-center gap-1.5 text-[10.5px] font-sans font-black shadow-sm select-none">
+                    <Check className="w-4 h-4 text-emerald-600 animate-pulse" />
+                    <span>Selesai Dibaca ✓</span>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => {
+                      try {
+                        const saved = JSON.parse(localStorage.getItem("suki_read_books") || "[]");
+                        if (Array.isArray(saved) && !saved.includes(selectedBook.id)) {
+                          saved.push(selectedBook.id);
+                          localStorage.setItem("suki_read_books", JSON.stringify(saved));
+                          setReadBookIds(saved);
+                          window.dispatchEvent(new Event("suki_stats_updated"));
+                        }
+                      } catch (e) {
+                        console.error("Failed to track read book:", e);
+                      }
+                    }}
+                    className="w-full py-2.5 px-3 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white rounded-xl border border-amber-400/20 text-[10.5px] font-sans font-black shadow-md hover:shadow-amber-500/10 active:scale-95 transition-all cursor-pointer flex items-center justify-center gap-1"
+                  >
+                    <span>Tandai Selesai Dibaca ✓</span>
+                  </button>
+                )}
               </div>
 
               <div className="border-t border-stone-200 w-full pt-3 mt-3 text-[9px] font-mono text-stone-400 select-none">

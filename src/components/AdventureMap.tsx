@@ -206,16 +206,46 @@ export default function AdventureMap({
   onUnlockTree,
 }: AdventureMapProps) {
   // We allow user to toggle between "languages" and "technology" curriculum tracks
-  const [currentTrack, setCurrentTrack] = useState<"languages" | "tech">("languages");
+  const [currentTrack, setCurrentTrack] = useState<"languages" | "tech">(() => {
+    return (localStorage.getItem("studysuki_current_track") as "languages" | "tech") || "languages";
+  });
   
   // Track selected language within the languages curriculum (defaults to 'en' - Inggris)
-  const [selectedLangCode, setSelectedLangCode] = useState<string>("en");
+  const [selectedLangCode, setSelectedLangCode] = useState<string>(() => {
+    return localStorage.getItem("studysuki_selected_lang") || "en";
+  });
 
   // Two-step dynamic dialect state machines
-  const [tempLangCode, setTempLangCode] = useState<string | null>("en");
+  const [tempLangCode, setTempLangCode] = useState<string | null>(() => {
+    return localStorage.getItem("studysuki_temp_lang") || "en";
+  });
   const [selectedDialect, setSelectedDialect] = useState<string | null>(() => {
     return localStorage.getItem("studysuki_selected_dialect") || "American (General, Southern, NYC)";
   });
+
+  useEffect(() => {
+    localStorage.setItem("studysuki_current_track", currentTrack);
+  }, [currentTrack]);
+
+  useEffect(() => {
+    localStorage.setItem("studysuki_selected_lang", selectedLangCode);
+  }, [selectedLangCode]);
+
+  useEffect(() => {
+    if (tempLangCode) {
+      localStorage.setItem("studysuki_temp_lang", tempLangCode);
+    } else {
+      localStorage.removeItem("studysuki_temp_lang");
+    }
+  }, [tempLangCode]);
+
+  useEffect(() => {
+    if (selectedDialect) {
+      localStorage.setItem("studysuki_selected_dialect", selectedDialect);
+    } else {
+      localStorage.removeItem("studysuki_selected_dialect");
+    }
+  }, [selectedDialect]);
 
   const activeLanguage = LANGUAGES_CURRICULUM.find(
     (lang) => lang.code === selectedLangCode

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { motion, AnimatePresence } from "motion/react";
 import { Lesson, UserStats } from "./types";
 import { LESSONS } from "./data/lessons";
 import AdventureMap from "./components/AdventureMap";
@@ -7,6 +8,20 @@ import AIStudyCompanion from "./components/AIStudyCompanion";
 import SpeechPractice from "./components/SpeechPractice";
 import SukiMascot from "./components/SukiMascot";
 import HistoryLibrary from "./components/HistoryLibrary";
+import { onAuthStateChanged, signOut, User as FirebaseUser } from "firebase/auth";
+import { 
+  auth, 
+  googleProvider, 
+  signInWithPopup, 
+  db, 
+  handleFirestoreError, 
+  OperationType, 
+  doc, 
+  getDoc, 
+  setDoc, 
+  updateDoc, 
+  serverTimestamp 
+} from "./lib/firebase";
 
 import {
   GraduationCap,
@@ -33,6 +48,7 @@ import {
 } from "lucide-react";
 
 interface LoggedInUser {
+  uid: string;
   name: string;
   email: string;
   picture: string;
@@ -71,39 +87,66 @@ const ACHIEVEMENTS: Achievement[] = [
   }
 ];
 
-const decodeGsiToken = (token: string) => {
-  try {
-    const base64Url = token.split(".")[1];
-    const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
-    const jsonPayload = decodeURIComponent(
-      window
-        .atob(base64)
-        .split("")
-        .map(function (c) {
-          return "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2);
-        })
-        .join("")
-    );
-    return JSON.parse(jsonPayload);
-  } catch (err) {
-    console.error("Gagal men-decode token Google GSI:", err);
-    return null;
-  }
+const INITIAL_STATS: UserStats = {
+  exp: 0,
+  unlockedTrees: ["mudah"],
+  completedLessons: [],
+  chessWins: 0,
+  gamesPlayed: 0,
+  unlockedAchievements: [],
 };
 
 export default function App() {
-  // Core user session state loaded from local storage
-  const [currentUser, setCurrentUser] = useState<LoggedInUser | null>(() => {
-    const saved = localStorage.getItem("studysuki_current_user");
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch {
-        return null;
+  const [currentUser, setCurrentUser] = useState<LoggedInUser | null>(null);
+  const [stats, setStats] = useState<UserStats>(INITIAL_STATS);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [isSyncing, setIsSyncing] = useState(false);
+
+  const [showProfileModal, setShowProfileModal] = useState<boolean>(false);
+  const [activeTab, setActiveTab ] = useState<"adventure" | "chess" | "history" | "guide">("adventure");
+  const [selectedLesson, setSelectedLesson] = useState<Lesson | null>(null);
+  const [selectedOption, setSelectedOption] = useState<number | null>(null);
+  const [quizSubmitted, setQuizSubmitted] = useState<boolean>(false);
+  const [quizFeedback, setQuizFeedback] = useState<{ isCorrect: boolean; text: string } | null>(null);
+  const [xpToast, setXpToast] = useState<{ show: boolean; msg: string; amt: number }>({
+    show: false,
+    msg: "",
+    amt: 0,
+  });
+  const [levelUpToast, setLevelUpToast] = useState<{ show: boolean; level: number } | null>(null);
+  const prevLevelRef = React.useRef<number | null>(null);
+
+  useEffect(() => {
+    if (stats && typeof stats.exp === "number") {
+      const currentLvl = Math.floor(stats.exp / 200) + 1;
+      if (prevLevelRef.current === null) {
+        prevLevelRef.current = currentLvl;
+      } else if (currentLvl > prevLevelRef.current) {
+        setLevelUpToast({ show: true, level: currentLvl });
+        prevLevelRef.current = currentLvl;
+      } else if (currentLvl < prevLevelRef.current) {
+        prevLevelRef.current = currentLvl;
       }
     }
-    return null;
+  }, [stats.exp]);
+  const [achievementToast, setAchievementToast] = useState<{ show: boolean; title: string; desc: string } | null>(null);
+  const [streak, setStreak] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem("suki_streak_count");
+      return saved ? parseInt(saved, 10) : 1;
+    } catch {
+      return 1;
+    }
   });
+  const [readBooksCount, setReadBooksCount] = useState<number>(() => {
+    try {
+      const arr = JSON.parse(localStorage.getItem("suki_read_books") || "[]");
+      return Array.isArray(arr) ? arr.length : 0;
+    } catch {
+      return 0;
+    }
+  });
+  const [streakBonusMsg, setStreakBonusMsg] = useState<string | null>(null);
 
   const getStatsForUser = (user: LoggedInUser | null): UserStats => {
     const key = user ? (user.isGuest ? "studysuki_user_stats_guest" : `studysuki_user_stats_${encodeURIComponent(user.email)}`) : "studysuki_user_stats_guest";
@@ -125,77 +168,132 @@ export default function App() {
         console.error("Gagal membaca profil EXP level:", e);
       }
     }
-    return {
-      exp: 0,
-      unlockedTrees: ["mudah"],
-      completedLessons: [],
-      chessWins: 0,
-      gamesPlayed: 0,
-      unlockedAchievements: [],
-    };
+    return INITIAL_STATS;
   };
 
-  // 1. Core local storage persistent stats, keyed by logged in account
-  const [stats, setStats] = useState<UserStats>(() => {
-    const userSaved = localStorage.getItem("studysuki_current_user");
-    let user: LoggedInUser | null = null;
-    if (userSaved) {
-      try { user = JSON.parse(userSaved); } catch {}
-    }
-    return getStatsForUser(user);
-  });
+  // 1. Core Auth Listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      setAuthLoading(true);
+      if (user) {
+        const userDocRef = doc(db, "users", user.uid);
+        try {
+          const userDoc = await getDoc(userDocRef);
+          let userStats: UserStats;
+          
+          if (userDoc.exists()) {
+            const data = userDoc.data();
+            userStats = {
+              exp: data.exp ?? 0,
+              unlockedTrees: data.unlockedTrees ?? ["mudah"],
+              completedLessons: data.completedLessons ?? [],
+              chessWins: data.chessWins ?? 0,
+              gamesPlayed: data.gamesPlayed ?? 0,
+              unlockedAchievements: data.unlockedAchievements ?? [],
+            };
+            if (data.streak) setStreak(data.streak);
+            if (data.readBooks) {
+               localStorage.setItem("suki_read_books", JSON.stringify(data.readBooks));
+               setReadBooksCount(data.readBooks.length);
+            }
+          } else {
+            userStats = INITIAL_STATS;
+            await setDoc(userDocRef, {
+              userId: user.uid,
+              name: user.displayName || "User",
+              email: user.email,
+              picture: user.photoURL || "",
+              ...INITIAL_STATS,
+              streak: 1,
+              lastActiveDate: new Date().toDateString(),
+              lastActiveTimestamp: Date.now(),
+              readBooks: [],
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+          }
 
-  // Track play audio configurations
-  const [showProfileModal, setShowProfileModal] = useState<boolean>(false);
+          setCurrentUser({
+            uid: user.uid,
+            name: user.displayName || "User",
+            email: user.email || "",
+            picture: user.photoURL || "",
+            isGuest: false,
+          });
+          setStats(userStats);
+        } catch (error) {
+          console.error("Auth sync error:", error);
+        }
+      } else {
+        const savedGuest = localStorage.getItem("studysuki_current_user");
+        if (savedGuest) {
+          try {
+            const parsed = JSON.parse(savedGuest);
+            if (parsed.isGuest) {
+              setCurrentUser(parsed);
+              setStats(getStatsForUser(parsed));
+            }
+          } catch {}
+        }
+      }
+      setAuthLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
 
-  // Custom Google Login simulation states to bypass deployed subdomain origin mismatch error
-  const [showGoogleLoginModal, setShowGoogleLoginModal] = useState<boolean>(false);
-  const [googleFormEmail, setGoogleFormEmail] = useState<string>("");
-  const [googleFormName, setGoogleFormName] = useState<string>("");
-  const [googleFormStep, setGoogleFormStep] = useState<"choose" | "input" | "loading" | "complete">("choose");
-  const [googleSelectedAccount, setGoogleSelectedAccount] = useState<{name: string, email: string} | null>(null);
+  // 2. Sync to Firestore on changes
+  useEffect(() => {
+    if (!currentUser || currentUser.isGuest) return;
 
-  // Track active application view tabs: "adventure" | "chess" | "history" | "guide"
-  const [activeTab, setActiveTab ] = useState<"adventure" | "chess" | "history" | "guide">("adventure");
-  
-  // Track selected sub-materi lesson study focus
-  const [selectedLesson, setSelectedLesson] = useState<Lesson | null>(null);
+    const timer = setTimeout(async () => {
+      setIsSyncing(true);
+      try {
+        const userDocRef = doc(db, "users", currentUser.uid);
+        await updateDoc(userDocRef, {
+          exp: stats.exp,
+          unlockedTrees: stats.unlockedTrees,
+          completedLessons: stats.completedLessons,
+          chessWins: stats.chessWins,
+          gamesPlayed: stats.gamesPlayed,
+          unlockedAchievements: stats.unlockedAchievements || [],
+          streak,
+          lastActiveDate: localStorage.getItem("suki_last_active_date") || new Date().toDateString(),
+          lastActiveTimestamp: parseInt(localStorage.getItem("suki_last_active_timestamp") || Date.now().toString(), 10),
+          readBooks: JSON.parse(localStorage.getItem("suki_read_books") || "[]"),
+          updatedAt: serverTimestamp(),
+        });
+      } catch (error) {
+        console.error("Firestore sync error:", error);
+      } finally {
+        setIsSyncing(false);
+      }
+    }, 3000);
 
-  // Track current quiz attempt state
-  const [selectedOption, setSelectedOption] = useState<number | null>(null);
-  const [quizSubmitted, setQuizSubmitted] = useState<boolean>(false);
-  const [quizFeedback, setQuizFeedback] = useState<{ isCorrect: boolean; text: string } | null>(null);
+    return () => clearTimeout(timer);
+  }, [stats, currentUser, streak, readBooksCount]);
 
-  // Toast / XP notification popups
-  const [xpToast, setXpToast] = useState<{ show: boolean; msg: string; amt: number }>({
-    show: false,
-    msg: "",
-    amt: 0,
-  });
-
-  // Achievement unlock popups
-  const [achievementToast, setAchievementToast] = useState<{ show: boolean; title: string; desc: string } | null>(null);
-
-  // Daily Streak State and History books tracking state
-  const [streak, setStreak] = useState<number>(() => {
+  const handleLoginWithGoogle = async () => {
     try {
-      const saved = localStorage.getItem("suki_streak_count");
-      return saved ? parseInt(saved, 10) : 1;
-    } catch {
-      return 1;
+      const result = await signInWithPopup(auth, googleProvider);
+      // onAuthStateChanged handles the rest
+    } catch (error) {
+      console.error("Google login error:", error);
+      alert("Gagal masuk dengan Google. Silakan coba lagi.");
     }
-  });
+  };
 
-  const [readBooksCount, setReadBooksCount] = useState<number>(() => {
-    try {
-      const arr = JSON.parse(localStorage.getItem("suki_read_books") || "[]");
-      return Array.isArray(arr) ? arr.length : 0;
-    } catch {
-      return 0;
-    }
-  });
-
-  const [streakBonusMsg, setStreakBonusMsg] = useState<string | null>(null);
+  const handleLoginAsGuest = () => {
+    const guestUser: LoggedInUser = {
+      uid: "guest-" + Math.random().toString(36).substr(2, 9),
+      name: "Tamu",
+      email: "guest",
+      picture: "",
+      isGuest: true,
+    };
+    setCurrentUser(guestUser);
+    setStats(getStatsForUser(guestUser));
+    localStorage.setItem("studysuki_current_user", JSON.stringify(guestUser));
+  };
 
   // Sync books read counter reactively
   useEffect(() => {
@@ -206,8 +304,19 @@ export default function App() {
       } catch {}
     };
     window.addEventListener("suki_stats_updated", syncStats);
+    window.dispatchEvent(new Event("suki_stats_updated")); // Run once on load/mount
     return () => window.removeEventListener("suki_stats_updated", syncStats);
   }, []);
+
+  // Save stats to localStorage when they change to support Guest profile saving in real-time
+  useEffect(() => {
+    if (currentUser) {
+      const key = currentUser.isGuest
+        ? "studysuki_user_stats_guest"
+        : `studysuki_user_stats_${encodeURIComponent(currentUser.email)}`;
+      localStorage.setItem(key, JSON.stringify(stats));
+    }
+  }, [stats, currentUser]);
 
   // Daily Streak Tracking Logic
   useEffect(() => {
@@ -268,7 +377,7 @@ export default function App() {
     }
   }, []);
 
-  // Save current user changes to localStorage
+  // Save current user changes to localStorage for quick hydration on refresh
   useEffect(() => {
     if (currentUser) {
       localStorage.setItem("studysuki_current_user", JSON.stringify(currentUser));
@@ -277,61 +386,17 @@ export default function App() {
     }
   }, [currentUser]);
 
-  // Load official Google GSI platform scripts and initialize SSO
-  useEffect(() => {
-    const initGsi = () => {
-      if (typeof window !== "undefined" && (window as any).google?.accounts?.id) {
-        (window as any).google.accounts.id.initialize({
-          client_id: "394317873247-sandbox-demo.apps.googleusercontent.com",
-          callback: (response: any) => {
-            const payload = decodeGsiToken(response.credential);
-            if (payload) {
-              const googleUser = {
-                name: payload.name || "Google User",
-                email: payload.email || "user@gmail.com",
-                picture: payload.picture || "https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=256&auto=format&fit=crop",
-                isGuest: false,
-              };
-              handleLogin(googleUser);
-            }
-          },
-        });
-        
-        const btnElement = document.getElementById("googleGsiBtnContainer");
-        if (btnElement) {
-          (window as any).google.accounts.id.renderButton(btnElement, {
-            theme: "outline",
-            size: "large",
-            text: "signin_with",
-            shape: "pill",
-          });
-        }
-      }
-    };
-
-    // Poll until GSI initializes or becomes available
-    initGsi();
-    const interval = setInterval(initGsi, 1000);
-    return () => clearInterval(interval);
-  }, [currentUser]);
-
-  // Save current stats changes to localStorage, distinct per character account
-  useEffect(() => {
-    const key = currentUser ? (currentUser.isGuest ? "studysuki_user_stats_guest" : `studysuki_user_stats_${encodeURIComponent(currentUser.email)}`) : "studysuki_user_stats_guest";
-    localStorage.setItem(key, JSON.stringify(stats));
-  }, [stats, currentUser]);
-
-  // Handle Login handler which overrides the stats
-  const handleLogin = (newUser: LoggedInUser) => {
-    setCurrentUser(newUser);
-    setStats(getStatsForUser(newUser));
-    setShowProfileModal(false);
-  };
-
   // Handle Logout handler
-  const handleLogout = () => {
-    setCurrentUser(null);
-    setShowProfileModal(false);
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      setCurrentUser(null);
+      setStats(INITIAL_STATS);
+      localStorage.removeItem("studysuki_current_user");
+      setShowProfileModal(false);
+    } catch (error) {
+      console.error("Logout error:", error);
+    }
   };
 
   // Continuously scan and unlock achievements in the background
@@ -436,6 +501,7 @@ export default function App() {
   };
 
   const rank = getRankInfo(stats.exp);
+  const currentLevel = Math.floor(stats.exp / 200) + 1;
 
   // Trigger unlocking a tree gate
   const handleUnlockTree = (tree: "sedang" | "susah", cost: number) => {
@@ -511,6 +577,20 @@ export default function App() {
 
 
 
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#0d121a]">
+        <div className="flex flex-col items-center gap-6">
+          <div className="w-16 h-16 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
+          <div className="text-center">
+            <h2 className="text-white font-sans font-bold text-xl">StudySuki AI</h2>
+            <p className="text-emerald-500 font-mono text-xs mt-2 animate-pulse font-bold">MENGHUBUNGKAN AKUN...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (!currentUser) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-6 relative overflow-hidden select-none">
@@ -519,20 +599,19 @@ export default function App() {
         <div className="absolute inset-0 bg-[#0d121a]/60 z-0"></div>
 
         {/* Core Screen Container */}
-        <div id="login-container-card" className="w-full max-w-lg bg-[#FCFAF2] border-4 border-stone-950 rounded-[2.5rem] p-8 md:p-10 shadow-2xl relative z-10 text-center space-y-8 animate-fade-in text-[#1c1917]">
+        <div id="login-container-card" className="w-full max-w-lg bg-white border-4 border-stone-200 rounded-[2.5rem] p-8 md:p-10 shadow-2xl relative z-10 text-center space-y-8 animate-fade-in text-stone-900">
           
           {/* Aesthetic Logo Header */}
           <div className="flex flex-col items-center space-y-4">
-            <div className="w-16 h-16 rounded-[1.5rem] bg-emerald-600 border-2 border-stone-950 text-white flex items-center justify-center shadow-lg relative">
-              <span className="absolute inset-0 w-full h-full rounded-[1.5rem] bg-emerald-500 animate-ping opacity-10"></span>
-              <GraduationCap className="w-9 h-9" />
+            <div className="w-20 h-20 rounded-[1.5rem] overflow-hidden flex items-center justify-center shadow-lg relative bg-white border border-stone-100">
+              <img src="/logo.png" alt="StudySuki Logo" className="w-full h-full object-contain" />
             </div>
             
             <div className="space-y-1">
               <h1 className="font-sans font-extrabold text-3xl tracking-tight text-stone-900">
                 StudySuki <span className="text-emerald-700">AI</span>
               </h1>
-              <span className="inline-block text-[10px] uppercase font-mono font-bold tracking-widest bg-emerald-50 text-emerald-800 px-3 py-1 rounded-full border-2 border-stone-950">
+              <span className="inline-block text-[10px] uppercase font-mono font-bold tracking-widest bg-emerald-50 text-emerald-800 px-3 py-1 rounded-full border border-stone-200">
                 v2.0 Stable • Smart Learning Platform
               </span>
             </div>
@@ -542,27 +621,24 @@ export default function App() {
             </p>
           </div>
 
-          <div className="border-t border-stone-300"></div>
+          <div className="border-t border-stone-200"></div>
 
           {/* Buttons Area */}
           <div className="space-y-4 flex flex-col items-center w-full">
             
             <div className="flex flex-col items-center w-full space-y-3">
-              <span className="text-[10px] uppercase font-mono font-black text-amber-850 tracking-wider">
+              <span className="text-[10px] uppercase font-mono font-black text-amber-800 tracking-wider">
                 Masuk Untuk Menyimpan Progress Akun
               </span>
 
-              {/* Secure interactive Google Account Selector button to avoid console GSI domain validation failures */}
+              {/* Secure interactive Google Account Firebase pop-up logic */}
               <button
-                onClick={() => {
-                  setGoogleFormStep("choose");
-                  setShowGoogleLoginModal(true);
-                }}
+                onClick={handleLoginWithGoogle}
                 type="button"
-                className="w-full py-3.5 px-5 select-none rounded-2xl border-4 border-stone-950 bg-white hover:bg-stone-50 text-stone-850 text-xs md:text-sm font-sans font-black flex items-center justify-center gap-2.5 transition-all cursor-pointer shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:translate-x-0.5 active:translate-y-0.5"
+                className="w-full py-3.5 px-5 select-none rounded-2xl border-2 border-stone-200 bg-white hover:bg-stone-50 text-stone-900 text-xs md:text-sm font-sans font-black flex items-center justify-center gap-2.5 transition-all cursor-pointer shadow-sm active:scale-95"
               >
                 <img src="https://upload.wikimedia.org/wikipedia/commons/c/c1/Google_%22G%22_logo.svg" alt="Google Logo" className="w-4 h-4" />
-                <span>Masuk dengan Google (Resmi)</span>
+                <span>Masuk dengan Google</span>
               </button>
             </div>
 
@@ -574,15 +650,7 @@ export default function App() {
 
             {/* Tombol 2: Guest Mode (Tamu) */}
             <button
-              onClick={() => {
-                const guestUser = {
-                  name: "Tamu",
-                  email: "guest",
-                  picture: "",
-                  isGuest: true,
-                };
-                handleLogin(guestUser);
-              }}
+              onClick={handleLoginAsGuest}
               type="button"
               className="px-6 py-2.5 rounded-xl text-stone-500 hover:text-stone-850 text-xs md:text-sm font-sans font-bold transition-all hover:bg-stone-100 cursor-pointer border border-transparent hover:border-stone-300"
             >
@@ -592,207 +660,11 @@ export default function App() {
 
           <div className="border-t border-stone-300 pt-5">
             <p className="text-[10px] text-stone-450 font-mono">
-              Petualangan belajarmu tersimpan otomatis di browser menggunakan sandboxed localStorage.
+              Petualangan belajarmu tersimpan permanen di cloud Firebase jika menggunakan akun Google.
             </p>
           </div>
 
         </div>
-
-        {/* 100% SECURE AND INTERACTIVE GOOGLE AUTHENTICATION OVERLAY DIALOG */}
-        {showGoogleLoginModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-950/70 backdrop-blur-xs animate-fade-in select-text">
-            
-            <div className="bg-[#FCFAF2] border-4 border-stone-950 w-full max-w-md rounded-[2.5rem] p-6 md:p-8 shadow-2xl relative text-[#1c1917] space-y-6">
-              
-              {/* Close Button */}
-              <button
-                onClick={() => setShowGoogleLoginModal(false)}
-                className="absolute top-4 right-4 w-8 h-8 rounded-full border border-stone-200 hover:border-stone-300 text-stone-500 hover:text-stone-800 flex items-center justify-center shadow-sm transition-all cursor-pointer bg-stone-50"
-              >
-                <X className="w-4 h-4" />
-              </button>
-
-              {/* Google Brand Header */}
-              <div className="text-center space-y-2 select-none">
-                <div className="flex justify-center gap-1.5 items-center">
-                  <img src="https://upload.wikimedia.org/wikipedia/commons/c/c1/Google_%22G%22_logo.svg" alt="Google Logo" className="w-6 h-6" />
-                  <span className="font-sans font-bold text-lg text-stone-750 tracking-tight">Akun Google</span>
-                </div>
-                <h3 className="font-sans font-extrabold text-base text-stone-900">
-                  {googleFormStep === "choose" && "Pilih akun Google Anda"}
-                  {googleFormStep === "input" && "Gunakan Akun Google Baru"}
-                  {googleFormStep === "loading" && "Menghubungkan Akun..."}
-                </h3>
-                <p className="text-[11px] text-stone-500 font-sans">
-                  Lanjutkan registrasi identitas ke aplikasi <span className="font-bold text-emerald-800">StudySuki AI</span>
-                </p>
-              </div>
-
-              {/* Google Step: Choose existing accounts */}
-              {googleFormStep === "choose" && (
-                <div className="space-y-3">
-                  
-                  {/* Account List Option 1: User's Browser Profile */}
-                  <div
-                    onClick={() => {
-                      setGoogleSelectedAccount({ name: "Arifandi Cicak", email: "arifandicicak@gmail.com" });
-                      setGoogleFormStep("loading");
-                      setTimeout(() => {
-                        handleLogin({
-                          name: "Arifandi Cicak",
-                          email: "arifandicicak@gmail.com",
-                          picture: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?q=80&w=256&auto=format&fit=crop",
-                          isGuest: false,
-                        });
-                        setShowGoogleLoginModal(false);
-                      }, 1800);
-                    }}
-                    className="flex items-center gap-3 p-3.5 border-2 border-stone-300 rounded-2xl hover:border-stone-950 hover:bg-stone-50 transition-all cursor-pointer whitespace-nowrap overflow-hidden"
-                  >
-                    <div className="w-10 h-10 rounded-full overflow-hidden shrink-0 border border-stone-200">
-                      <img src="https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?q=80&w=256&auto=format&fit=crop" alt="Arifandi" className="w-full h-full object-cover" />
-                    </div>
-                    <div className="text-left overflow-hidden">
-                      <p className="text-xs font-black text-stone-900 truncate">Arifandi Cicak</p>
-                      <p className="text-[10px] text-stone-500 font-mono truncate">arifandicicak@gmail.com</p>
-                    </div>
-                  </div>
-
-                  {/* Account List Option 2: Default study profile */}
-                  <div
-                    onClick={() => {
-                      setGoogleSelectedAccount({ name: "Suki Explorer", email: "suki.student@gmail.com" });
-                      setGoogleFormStep("loading");
-                      setTimeout(() => {
-                        handleLogin({
-                          name: "Suki Explorer",
-                          email: "suki.student@gmail.com",
-                          picture: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=256&auto=format&fit=crop",
-                          isGuest: false,
-                        });
-                        setShowGoogleLoginModal(false);
-                      }, 1800);
-                    }}
-                    className="flex items-center gap-3 p-3.5 border-2 border-stone-300 rounded-2xl hover:border-stone-950 hover:bg-stone-50 transition-all cursor-pointer whitespace-nowrap overflow-hidden"
-                  >
-                    <div className="w-10 h-10 rounded-full overflow-hidden shrink-0 border border-stone-200">
-                      <img src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=256&auto=format&fit=crop" alt="Explorer" className="w-full h-full object-cover" />
-                    </div>
-                    <div className="text-left overflow-hidden">
-                      <p className="text-xs font-black text-stone-900 truncate">Suki Explorer</p>
-                      <p className="text-[10px] text-stone-500 font-mono truncate">suki.student@gmail.com</p>
-                    </div>
-                  </div>
-
-                  {/* Account List Option 3: Use custom Google Account credentials */}
-                  <button
-                    onClick={() => setGoogleFormStep("input")}
-                    type="button"
-                    className="w-full py-3 px-4 border-2 border-dashed border-stone-300 hover:border-stone-950 rounded-2xl text-stone-550 hover:text-stone-850 text-xs font-black text-center transition-all cursor-pointer"
-                  >
-                    + Gunakan Email Google Lain...
-                  </button>
-                </div>
-              )}
-
-              {/* Google Step: Form input for custom credentials */}
-              {googleFormStep === "input" && (
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    if (!googleFormName.trim() || !googleFormEmail.trim()) return;
-                    setGoogleSelectedAccount({ name: googleFormName, email: googleFormEmail });
-                    setGoogleFormStep("loading");
-                    setTimeout(() => {
-                      handleLogin({
-                        name: googleFormName,
-                        email: googleFormEmail,
-                        picture: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=256&auto=format&fit=crop",
-                        isGuest: false,
-                      });
-                      setShowGoogleLoginModal(false);
-                    }, 1800);
-                  }}
-                  className="space-y-4"
-                >
-                  <div className="space-y-3.5 text-left">
-                    <div>
-                      <label className="block text-[10px] uppercase font-mono font-black text-stone-600 mb-1">Nama Lengkap Google</label>
-                      <input
-                        type="text"
-                        placeholder="Masukkan nama akun Anda..."
-                        value={googleFormName}
-                        onChange={(e) => setGoogleFormName(e.target.value)}
-                        required
-                        className="w-full px-3.5 py-2.5 bg-white border-2 border-stone-950 focus:outline-none focus:ring-4 focus:ring-emerald-500/10 rounded-xl font-sans text-xs text-stone-900"
-                      />
-                    </div>
-                    
-                    <div>
-                      <label className="block text-[10px] uppercase font-mono font-black text-stone-600 mb-1">Email Google (@gmail.com)</label>
-                      <input
-                        type="email"
-                        placeholder="contoh: budi@gmail.com"
-                        value={googleFormEmail}
-                        onChange={(e) => setGoogleFormEmail(e.target.value)}
-                        required
-                        className="w-full px-3.5 py-2.5 bg-white border-2 border-stone-950 focus:outline-none focus:ring-4 focus:ring-emerald-500/10 rounded-xl font-sans text-xs text-stone-900"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="flex gap-2.5 pt-2">
-                    <button
-                      type="button"
-                      onClick={() => setGoogleFormStep("choose")}
-                      className="flex-1 py-2 rounded-xl text-stone-500 hover:bg-stone-200/50 text-xs font-bold transition-all border border-stone-300"
-                    >
-                      Kembali
-                    </button>
-                    <button
-                      type="submit"
-                      className="flex-1 py-2.5 rounded-xl bg-blue-600 border-2 border-stone-950 hover:bg-blue-700 text-white text-xs font-sans font-black shadow transition-all cursor-pointer"
-                    >
-                      Masuk Sekarang →
-                    </button>
-                  </div>
-                </form>
-              )}
-
-              {/* Google Step: True connecting loader */}
-              {googleFormStep === "loading" && (
-                <div className="py-8 space-y-4 text-center select-none">
-                  <div className="relative w-12 h-12 mx-auto">
-                    <span className="absolute inset-0 border-4 border-stone-200 rounded-full"></span>
-                    <span className="absolute inset-0 border-4 border-blue-600 rounded-full animate-spin border-t-transparent"></span>
-                  </div>
-                  
-                  <div className="space-y-1">
-                    <p className="text-xs font-bold text-stone-850">
-                      Mengkonfirmasi Otoritas Akun...
-                    </p>
-                    <p className="text-[10px] text-stone-500 font-mono">
-                      {googleSelectedAccount?.email}
-                    </p>
-                  </div>
-
-                  {/* Infinite loading bar styled similar to Google sign-in page loading indicator */}
-                  <div className="w-full h-1 bg-stone-100 rounded-full overflow-hidden relative">
-                    <div className="absolute top-0 bottom-0 left-0 bg-blue-600 h-full w-1/3 animate-pulse" style={{ animationDuration: '0.8s' }}></div>
-                  </div>
-                </div>
-              )}
-
-              {/* Security info disclaimer */}
-              <div className="border-t border-stone-150 pt-3 flex items-center justify-center gap-1.5 text-[9px] font-mono text-stone-400 select-none">
-                <ShieldAlert className="w-3.5 h-3.5 text-stone-300 shrink-0" />
-                <span>Otoritas diamankan oleh sandboxed Google fallback API simulator.</span>
-              </div>
-
-            </div>
-
-          </div>
-        )}
 
       </div>
     );
@@ -819,8 +691,8 @@ export default function App() {
           
           {/* Brand Logo Title */}
           <div className="flex items-center gap-3">
-            <div className="bg-emerald-600 p-2.5 rounded-xl text-white shadow-md shadow-emerald-950/10">
-              <GraduationCap className="w-6 h-6" />
+            <div className="w-12 h-12 rounded-xl overflow-hidden shadow-md">
+              <img src="/logo.png" alt="StudySuki Logo" className="w-full h-full object-contain bg-white" />
             </div>
             <div>
               <div className="flex items-center gap-2">
@@ -841,46 +713,55 @@ export default function App() {
           </div>
 
           {/* User EXP Telemetry Bar System */}
-          <div id="exp-telemetry-header" className="bg-stone-50 border border-stone-200 rounded-2xl px-5 py-2.5 flex-1 max-w-lg shadow-sm flex flex-col md:flex-row items-center gap-4 text-stone-700">
-            
+          <div id="exp-telemetry-header" className="bg-stone-50 border border-stone-200 rounded-2xl px-5 py-2.5 flex-1 max-w-xl shadow-sm flex flex-col md:flex-row items-center gap-4 text-stone-700">
             {/* Rank Badge and Title */}
-            <div className="flex items-center gap-2.5 shrink-0 self-start md:self-auto">
+            <div className="flex items-center gap-2.5 shrink-0">
               <div className="bg-amber-50 p-2 rounded-lg border border-amber-200 text-amber-700 animate-bounce">
                 {stats.exp >= 1000 ? <Crown className="w-5 h-5" /> : <Flame className="w-5 h-5" />}
               </div>
               <div>
                 <p className="text-[10px] text-stone-400 font-bold uppercase tracking-wider font-mono">Gelar Akun</p>
-                <p className="text-xs font-sans font-extrabold text-stone-900">{rank.title}</p>
+                <div className="flex items-center gap-1.5">
+                  <p className="text-xs font-sans font-extrabold text-stone-900">{rank.title}</p>
+                  <span className="px-1.5 py-0.5 bg-indigo-50 border border-indigo-200 rounded text-[9px] text-indigo-700 font-mono font-black">
+                    Lvl {currentLevel}
+                  </span>
+                </div>
               </div>
             </div>
 
-            {/* EXP Progress Bar indicator */}
-            <div className="w-full flex-1">
+            {/* EXP Progress Bar (0 - 200 EXP for next level) */}
+            <div className="w-full flex-1 pl-0 md:pl-4 md:border-l border-stone-200/50">
               <div className="flex items-center justify-between text-[11px] font-mono mb-1">
                 <span className="text-stone-500 flex items-center gap-1 font-semibold">
-                  <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
-                  EXP Terkumpul
+                  <Sparkles className="w-3.5 h-3.5 text-emerald-500 animate-pulse" />
+                  Total EXP: <span className="font-bold text-stone-900">{stats.exp}</span>
                 </span>
                 <span className="text-stone-900 font-bold">
-                  {stats.exp} <span className="text-stone-400">/ {rank.max} XP</span>
+                  {stats.exp % 200}
+                  <span className="text-stone-400 font-normal"> / 200 XP</span>
                 </span>
               </div>
 
-              {/* Progress track */}
+              {/* Level Progress track */}
               <div className="w-full h-2.5 bg-stone-200 rounded-full overflow-hidden flex shadow-inner border border-stone-300/40">
-                <div
-                  className={`h-full bg-emerald-600 transition-all duration-700 ease-out rounded-full`}
-                  style={{ width: `${rank.pct}%` }}
+                <span
+                  className="h-full bg-emerald-500 rounded-full block transition-all duration-700 ease-out"
+                  style={{ width: `${((stats.exp % 200) / 200) * 100}%` }}
                 />
               </div>
 
-              {/* Status footer for rank milestone */}
-              <div className="flex justify-between items-center mt-1 text-[9px] font-mono text-stone-400">
-                <span>{rank.min} XP</span>
-                <span>{rank.max - stats.exp > 0 ? `${rank.max - stats.exp} XP lagi menuju level baru` : "Milestone Maksimal!"}</span>
+              {/* Status footer for Level milestone */}
+              <div className="flex justify-between items-center mt-1 text-[9px] font-mono text-stone-450 font-bold">
+                <span>0 XP</span>
+                <span>
+                  {200 - (stats.exp % 200) > 0 
+                    ? `+${200 - (stats.exp % 200)} XP ke Lvl ${currentLevel + 1}` 
+                    : "Reset!"
+                  }
+                </span>
               </div>
             </div>
-
           </div>
 
           {/* Statistics Summary Widget (Value Proposition) & Streak Indicator */}
@@ -970,6 +851,12 @@ export default function App() {
 
           {/* User Profile Avatar Corner */}
           <div className="relative shrink-0 flex items-center gap-2">
+            {isSyncing && (
+              <div className="flex items-center gap-1.5 px-2 py-1 bg-amber-50 rounded-lg border border-amber-200 animate-pulse">
+                <RefreshCw className="w-3 h-3 text-amber-600 animate-spin" />
+                <span className="text-[10px] font-mono font-bold text-amber-700 uppercase">Syncing</span>
+              </div>
+            )}
             <button
               onClick={() => setShowProfileModal(!showProfileModal)}
               type="button"
@@ -1028,6 +915,47 @@ export default function App() {
           >
             ✕
           </button>
+        </div>
+      )}
+
+      {/* 2.5 FLOATING REAL-TIME LEVEL UP NOTIFICATION ALERT */}
+      {levelUpToast && levelUpToast.show && (
+        <div className="fixed bottom-24 right-6 z-55 bg-gradient-to-br from-indigo-900 via-indigo-950 to-slate-900 border-2 border-indigo-500/60 shadow-2xl p-5 rounded-3xl flex flex-col gap-3 animate-bounce max-w-sm text-white">
+          <div className="flex items-center gap-3.5">
+            <div className="bg-indigo-50/20 p-2.5 rounded-2xl text-indigo-400 shrink-0 border border-indigo-500/30">
+              <Sparkles className="w-6 h-6 animate-pulse text-indigo-400" />
+            </div>
+            <div>
+              <h5 className="font-sans font-black text-sm text-indigo-250 flex items-center gap-1.5 uppercase tracking-wide">
+                Akun Naik Level! 🎉
+              </h5>
+              <p className="text-[11px] text-indigo-300 font-mono">
+                Prestasi belajar terlampaui dengan luar biasa!
+              </p>
+            </div>
+            <button
+              onClick={() => setLevelUpToast(null)}
+              className="text-indigo-400 hover:text-white font-mono text-xs cursor-pointer ml-auto"
+            >
+              ✕
+            </button>
+          </div>
+          
+          <div className="bg-white/5 border border-white/10 p-3 rounded-2xl flex items-center justify-around text-center my-0.5">
+            <div>
+              <p className="text-[9px] text-white/40 uppercase tracking-widest font-mono">Level Lama</p>
+              <p className="text-lg font-sans font-extrabold text-white/60 line-through">Lvl {levelUpToast.level - 1}</p>
+            </div>
+            <div className="text-xl text-indigo-400 font-black animate-pulse">→</div>
+            <div>
+              <p className="text-[9px] text-indigo-400 uppercase tracking-widest font-mono font-black">Level Baru</p>
+              <p className="text-xl font-sans font-black text-indigo-300">Lvl {levelUpToast.level}</p>
+            </div>
+          </div>
+          
+          <p className="text-[10px] text-white/60 font-sans italic text-center">
+            Setiap 200 XP terkumpul, Anda akan terus naik level. Pertahankan perjuangan belajarmu!
+          </p>
         </div>
       )}
 
@@ -1173,6 +1101,7 @@ export default function App() {
                     phrase={(selectedLesson as any).examplePhrase}
                     translation={(selectedLesson as any).examplePhraseTranslation || ""}
                     langCode={selectedLesson.id.split("-")[0] || "en"}
+                    onSuccess={() => awardXP(15, "Pelafalan Sempurna")}
                   />
                 )}
 
@@ -1502,8 +1431,37 @@ export default function App() {
                 <p className="text-xs text-stone-500 font-mono">{currentUser?.isGuest ? "Selancar Tamu Percobaan" : currentUser?.email}</p>
               </div>
 
+              <div className="w-full space-y-1.5 px-4" id="exp-progress-container">
+                <div className="flex justify-between text-[10px] font-mono font-bold text-stone-600">
+                  <motion.span
+                    key={stats.exp >= 200 ? "lvl2" : "lvl1"}
+                    initial={{ opacity: 0, y: -5 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="text-emerald-700"
+                  >
+                    Level {stats.exp >= 200 ? "2" : "1"}
+                  </motion.span>
+                  <motion.span
+                    key={stats.exp}
+                    initial={{ scale: 1.1, color: "#059669" }}
+                    animate={{ scale: 1, color: "#57534e" }}
+                    className="font-mono"
+                  >
+                    {stats.exp} / 200 EXP
+                  </motion.span>
+                </div>
+                <div className="w-full h-2 bg-stone-200 rounded-full overflow-hidden">
+                  <motion.div
+                    className="h-full bg-emerald-600"
+                    initial={{ width: 0 }}
+                    animate={{ width: `${Math.min((stats.exp / 200) * 100, 100)}%` }}
+                    transition={{ type: "spring", stiffness: 50, damping: 20 }}
+                  />
+                </div>
+              </div>
+
               <div className="inline-block bg-emerald-50 border border-emerald-250 text-emerald-800 text-[10px] font-mono font-bold py-1 px-3.5 rounded-full shadow-sm">
-                Gelar: {rank.title} • {stats.exp} EXP
+                Gelar: {rank.title}
               </div>
             </div>
 
@@ -1513,17 +1471,23 @@ export default function App() {
             <h4 className="text-xs font-mono font-extrabold text-stone-400 uppercase tracking-widest mb-3 text-center">
               Statistik Prestasi Belajar
             </h4>
-            <div className="grid grid-cols-2 gap-3 mb-6">
-              <div className="bg-stone-50 border border-stone-200 rounded-2xl p-3 text-center">
-                <p className="text-[9px] font-mono font-bold text-stone-400 uppercase">Materi Selesai</p>
+            <div className="grid grid-cols-3 gap-3 mb-6">
+              <div className="bg-stone-50 border border-stone-200 rounded-2xl p-3 text-center animate-fade-in">
+                <p className="text-[9px] font-mono font-bold text-stone-400 uppercase">Kuis Unit Dilalui</p>
                 <p className="text-sm font-sans font-extrabold text-stone-900 mt-0.5">
-                  {stats.completedLessons.length} / {LESSONS.length}
+                  {stats.completedLessons.length}
+                </p>
+              </div>
+              <div className="bg-stone-50 border border-stone-200 rounded-2xl p-3 text-center">
+                <p className="text-[9px] font-mono font-bold text-stone-400 uppercase">Buku Dibaca</p>
+                <p className="text-sm font-sans font-extrabold text-stone-900 mt-0.5">
+                  {readBooksCount}
                 </p>
               </div>
               <div className="bg-stone-50 border border-stone-200 rounded-2xl p-3 text-center">
                 <p className="text-[9px] font-mono font-bold text-stone-400 uppercase">Menang Catur</p>
                 <p className="text-sm font-sans font-extrabold text-stone-900 mt-0.5">
-                  {stats.chessWins} Kali
+                  {stats.chessWins}
                 </p>
               </div>
             </div>

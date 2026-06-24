@@ -1,10 +1,11 @@
  import express from "express";
 import path from "path";
+import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 
-dotenv.config();
+dotenv.config({ override: true });
 
 async function startServer() {
   const app = express();
@@ -34,58 +35,86 @@ async function startServer() {
   }
 
   // Dynamic Local Indonesian Study Tutor Companion (acts as robust offline fallback when rate-limited or API is unavailable)
-  function generateLocalChatResponse(messages: any[], topic: string): string {
+  function generateLocalChatResponse(messages: any[], topic: string, taskContext: string = ""): string {
     try {
       const lastUserMsg = [...messages].reverse().find(m => m.role === "user")?.content || "";
       const query = lastUserMsg.toLowerCase();
       
-      const intro = `🎓 **[StudySuki Offline Mode]** Halo pembelajar hebat! Karena lalu lintas platform masa ini sedang sangat padat, saya beralih sementara ke asisten tanggap cerdas mandiri lokal agar belajarmu tetap lancar tanpa hambatan!
+      const isGajahMada = taskContext.includes("Gajah Mada");
+      const isTolkien = taskContext.includes("Tolkien");
+      const isKenArok = taskContext.includes("Ken Arok");
+      
+      let intro = "";
+      if (isGajahMada) {
+        intro = `⚔️ **[Sabda Mahapatih Gajah Mada - Offline Mode]** Demi Sumpah Palapa yang menggetarkan Nusantara! Aku, Mahapatih Gajah Mada, beralih ke saluran taktis cadangan kerajaan demi membimbing belajarmu tentang **"${topic}"**! 🐘\n\n`;
+      } else if (isTolkien) {
+        intro = `📜 **[J.R.R. Tolkien - Offline Mode]** Ah, pengelana budiman! Angin utara membawa kabut tebal, namun pena kita tidak akan berhenti menulis kisah agung **"${topic}"**. Selamat datang di perpustakaan legenda! ✒️\n\n`;
+      } else if (isKenArok) {
+        intro = `👑 **[Ken Arok - Offline Mode]** Berani sekali engkau menghadap sang Raja Singasari! Kerajaan sedang dalam transisi taktik, namun titah pendidikan tentang **"${topic}"** tetap harus menyala! 🗡️\n\n`;
+      } else {
+        intro = `🌸 **[Suki Off-line Mode]** OwO! Halooo kawan belajarku! Karena sinyal dari angkasa sedang padat merayap (kuota harian habis), Suki beralih ke mode offline ceria untukmu! ✨💖\n\nKira-kira tentang sub-materi **"${topic}"**, ada yang bisa Suki bantuin? >w<\n\n`;
+      }
 
-Terkait sub-materi kita hari ini: **"${topic}"**.\n\n`;
+      // 1. Gajah Mada responses
+      if (isGajahMada) {
+        if (query.includes("halo") || query.includes("hai") || query.includes("pagi") || query.includes("siang") || query.includes("sore") || query.includes("malam") || query.includes("salam")) {
+          return `${intro}Salam sejahtera, ksatria tangguh! Kehadiranmu membakar semangat juang di balairung Singasari dan Majapahit. Untuk menaklukkan **"${topic}"** ini, persiapkan ketajaman pikiranmu bagai bilah keris pusaka!\n\nApakah ada bait naskah kuno, tata bahasa, atau kuis yang ingin engkau bedah denganku hari ini? Katakan, dan kita akan taklukkan bersama!`;
+        }
+        if (query.includes("kuis") || query.includes("soal") || query.includes("jawab") || query.includes("ujian")) {
+          return `${intro}Ujian dan kuis adalah medan laga rahasia untuk menempa keahlian bertarungmu!\n\nDalam tantangan **"${topic}"**, setiap rintangan yang kamu lalui dengan tepat akan menuai penghargaan agung berupa **+50 EXP**! Bacalah teks rangkuman di layar tengah dengan saksama bagai membaca taktik perang musuh sebelum menyerbu!`;
+        }
+        if (query.includes("bantuan") || query.includes("cara") || query.includes("tips") || query.includes("belajar") || query.includes("sulit")) {
+          return `${intro}Rasa ragu dan kesulitan di awal perjalanan adalah hal lumrah bagi calon pemimpin besar Nusantara. Gunakan kiat ksatria ini:\n- 🎯 **Konsentrasi Penuh**: Matikan segala gangguan di sekitarmu.\n- 🗣️ **Nyaringkan Suara**: Lafalkan contoh kalimat di layar agar lidahmu terbiasa.\n- 🏆 **Ulangi Latihan**: Jangan menyerah jika gagal di kuis pertama, bangkitlah dan asah pedang pengetahuanmu sekali lagi!`;
+        }
+        return `${intro}Pertanyaan yang sangat berbobot! Dalam mengarungi sub-materi **"${topic}"**, ingatlah selalu tiga pilar keilmuan Majapahit:\n1. **Sintaksis (Tata Atur)**: Amati bagaimana kata-kata dirangkai membentuk makna agung.\n2. **Kosa Istilah**: Cermati setiap kata dan getaran suaranya.\n3. **Amalan**: Jangan hanya disimpan dalam benak, suarakan dan tulis agar abadi.\n\nAyo, selesaikan peta petualangan dan tuntaskan kuis di bawah agar nama kebesaranmu terpahat di prasasti kejayaan! 🚩`;
+      }
 
+      // 2. Tolkien responses
+      if (isTolkien) {
+        if (query.includes("halo") || query.includes("hai") || query.includes("pagi") || query.includes("siang") || query.includes("sore") || query.includes("malam")) {
+          return `${intro}Salam hangat di bawah naungan pohon emas! Duduklah di dekat perapian. Mempelajari bahasa dan legenda baru bagaikan menguak peta rahasia menuju kerajaan kuno yang hilang.\n\nMari kita jelajahi misteri sub-materi **"${topic}"** bersama. Bertanyalah sesukamu, apakah tentang mitologi, tata bahasa peri, atau kuis epik!`;
+        }
+        if (query.includes("kuis") || query.includes("soal") || query.includes("jawab") || query.includes("ujian")) {
+          return `${intro}Kuis bukanlah sekadar soal, melainkan teka-teki kuno di gerbang bawah tanah Khazad-dûm! Hanya jiwa yang jeli yang mampu memecahkannya.\n\nSelesaikan tantangan kuis **"${topic}"** di bawah layar untuk membuktikan ketajaman visimu, dan dapatkan upeti agung senilai **+50 EXP**!`;
+        }
+        if (query.includes("bantuan") || query.includes("cara") || query.includes("tips") || query.includes("belajar") || query.includes("sulit")) {
+          return `${intro}Bahkan Hobbit terkecil pun bisa mengubah jalannya masa depan! Jika belajarmu terasa berat, camkan nasihat elf ini:\n- ✍️ **Lestarikan Catatan**: Tuliskan kata sulit dengan tintamu sendiri.\n- 🎧 **Dengarkan Angin**: Putar transkrip audio berulang kali untuk menangkap intonasi aslinya.\n- ⏳ **Sabar & Setia**: Satu langkah demi satu langkah akan membawamu melewati puncak gunung bersalju!`;
+        }
+        return `${intro}Pertanyaanmu sungguh kaya akan gairah keingintahuan! Menilik aspek **"${topic}"**, kita sedang menapaki jalan pemikiran yang memikat.\n\nFokuslah mempelajari kosakata baru ini dan selesaikan seluruh pos latihan di layar sebelah kiri. Kemenangan belajar menantimu di ujung petualangan! 🏹`;
+      }
+
+      // 3. Ken Arok responses
+      if (isKenArok) {
+        if (query.includes("halo") || query.includes("hai") || query.includes("pagi") || query.includes("siang") || query.includes("sore") || query.includes("malam")) {
+          return `${intro}Kukira siapa yang berani mengetuk gerbang takhta! Senang melihat ambisi membara di matamu. Bagiku, menguasai tatabahasa **"${topic}"** tak ubahnya merancang strategi merebut takhta kerajaan!\n\nKatakan, apa yang ingin kau kuasai terlebih dulu? Biar kuajari caraku menaklukkan dunia!`;
+        }
+        if (query.includes("kuis") || query.includes("soal") || query.includes("jawab") || query.includes("ujian")) {
+          return `${intro}Setiap kuis di unit **"${topic}"** adalah rintangan yang dipasang takdir untuk menguji nyalimu!\n\nJawab dengan tegas dan kumpulkan **+50 EXP** demi memperluas wilayah kekuasaanmu di papan klasemen!`;
+        }
+        return `${intro}Ambisi adalah separuh dari kemenangan! Dalam mempelajari **"${topic}"**, jangan biarkan keraguan memperlambat langkahmu!\n\nSelesaikan babak pembelajaran di sebelah kiri dan kuasai ujian kuis di bawah ini sekarang juga!`;
+      }
+
+      // 4. Cheerful Suki Mascot responses
       if (query.includes("halo") || query.includes("hai") || query.includes("pagi") || query.includes("siang") || query.includes("sore") || query.includes("malam")) {
-        return `${intro}Hai! Senang bisa berbincang denganmu lagi. Saya siap membimbing pemahamanmu melompati tantangan peta kursus ini.
-
-Untuk memulai, mari kita fokus ulas sub-materi **"${topic}"**. Apakah kamu ingin bertanya seputar tata bahasa, menceritakan cara pelafalan kata, atau menelaah kuis? Utarakan saja apa yang masih mengganjal di pikiranmu ya!`;
+        return `${intro}Yaaaay! Halo sahabat belajarku yang imut dan rajin! Suki senang banget deh bisa nemenin kamu belajar **"${topic}"** lagi hari ini! UwO\n\nYuk, biar makin akrab, kamu mau nanya apa nih tentang materi hari ini? Suki siap kasi tips lucu biar belajarnya gak ngebosenin! ✨🌸`;
       } 
       
       if (query.includes("kuis") || query.includes("soal") || query.includes("jawab") || query.includes("ujian")) {
-        return `${intro}Mengerjakan kuis adalah sarana ampuh melatih ingatan aktif otak kita! 
-
-Pada setiap sub-materi **"${topic}"** di aplikasi StudySuki, kamu akan disajikan pertanyaan pilihan ganda yang dirancang cermat.
-
-💡 **Saran Sukses:**
-1. Pelajari panduan teks rangkuman di layar tengah.
-2. Amati susunan contoh kalimat dan transkrip suaranya.
-3. Ingat, menjawab kuis dengan tepat akan menyumbang **+50 EXP** berharga untuk profil belajarmu!`;
+        return `${intro}Waaaa! Ada kuis seru menantimu, lho! >w<\n\nMengerjakan kuis itu seru banget, kayak dapet peti harta karun rahasia! Setiap jawaban benar bakal ngasih kamu **+50 EXP** buat naikin level karakter belajarmu! 💖\n\n🌸 **Tips Imut dari Suki:** Bacalah ringkasan materi di sebelah kiri dulu, dengerin audionya baik-baik, terus jawab deh kuis cerianya!`;
       } 
       
       if (query.includes("bantuan") || query.includes("help") || query.includes("cara") || query.includes("tips") || query.includes("belajar") || query.includes("sulit")) {
-        return `${intro}Merasa kesulitan di awal mempelajari bahasa baru adalah bukti bahwa sel-sel otakmu sedang berkembang kreatif membentuk relasi memori baru!
-
-Berikut kiat jitu menaklukkan materi **"${topic}"**:
-- 🗣️ **Asosiasi Bunyi**: Lafalkan kalimat contoh keras-keras mengikuti transkrip fonetis untuk melatih refleks motorik mulut.
-- 📝 **Tulis Mandiri**: Cobalah menulis ulang minimal 3 kosakata baru dari sub-materi ini di selembar kertas.
-- 🎯 **Fokus Bertahap**: Mulai dari kuis Pemula yang lebih mudah sebelum beralih ke tantangan Menengah dan Master.`;
+        return `${intro}Uuuh, materi **"${topic}"** bikin pusing ya? Tenang, Suki ada di sini bareng kamu! Suki peluk dulu biar pusingnya hilang! ＼(★^∀^★)／\n\nBiar gampang taklukin materinya, coba cara comel ini:\n- 🗣️ **Ikutin Suki**: Tirukan kalimat contoh keras-keras biar lidahnya gak kaku!\n- 💖 **Bayangin Skenario**: Bayangkan kamu lagi ngomong langsung sama bule imut di sana!\n- 🍩 **Istirahat Sebentar**: Kalau lelah, makan donat dulu, lalu coba lagi kuisnya, pasti bisa!`;
       } 
       
       if (query.includes("terjemah") || query.includes("arti") || query.includes("artinya") || query.includes("kamus")) {
-        return `${intro}Mempelajari arti kata dan membandingkannya secara kontekstual membantu kita memahami logika berpikir penutur asli bahasa tersebut.
-
-Dalam sub-materi **"${topic}"**, setiap contoh kalimat telah dilengkapi dengan ejaan Pinyin/fonetik yang ramah pembelajar serta terjemahan harfiah yang jernih agar kamu langsung paham tujuannya dalam sekali lihat!`;
+        return `${intro}Mempelajari arti kata dan membandingkannya bikin kita makin peka sama logika bahasa tersebut, lho! 💡\n\nDi materi **"${topic}"**, kosa kata baru semuanya udah Suki kasih arti yang jernih dan gampang diingat! Yuk dibaca kembali daftar kosakatanya biar makin mantap!`;
       }
 
-      // General intelligent tutoring fallback
-      return `${intro}Itu pertanyaan yang sangat bagus untuk didiskusikan! Mari kita bedah konsep penting ini bersama-sama.
-
-Bila membahas sub-materi **"${topic}"**, ada beberapa pilar utama yang patut kita cermati:
-1. **Aturan Sintaksis**: Amati susunan urutan subjek (S), predikat (V), dan objek (O) apakah ada perubahan unik dibanding Bahasa Indonesia biasa.
-2. **Kekayaan Kosakata**: Cermati istilah khusus, getaran huruf, atau tanda baca yang dipelajari.
-3. **Praktek Mandiri**: Cobalah bayangkan satu skenario percakapan singkat di kepalamu yang menggunakan ungkapan baru ini dalam tugas barumu kelak.
-
-Ayo tuntaskan materi pembelajaran di panel sebelah kiri dan selesaikan kuis di bawahnya! Semangat belajar tak boleh padam! 💪`;
+      // General intelligent Suki Mascot conversational fallback
+      return `${intro}Ooh! Itu pertanyaan yang baguuuus banget! Suki kagum sama rasa penasaranmu! >w<\n\nJadi, pas kita bahas materi **"${topic}"**, ada beberapa rahasia seru yang perlu diingat nih:\n1. **Tata Urutan Kata 📝**: Cek apakah subjek sama objeknya agak beda posisi dibanding Bahasa Indonesia.\n2. **Bunyi Unik 🗣️**: Tirukan terus intonasinya berulang kali!\n3. **Coba Sendiri ✨**: Tulis ulang di buku belajarmu ya!\n\nYuk, selesaikan peta petualangan di sebelah kiri dan tuntaskan kuis seru biar dapet **+50 EXP**! Go, go, semangat belajarnya! 🌸🔥`;
     } catch (e) {
-      return `🎓 **[StudySuki Offline Mode]** Halo! Saya asisten pintar StudySuki. Kamu sedang belajar sub-materi **"${topic}"**. Mari cermati panduan di layar sebelah kiri, ulas kalimat contohnya secara seksama, lalu tuntaskan kuisnya dengan benar untuk meraih kuis sukses dan mendulang **+50 EXP**!`;
+      return `🌸 **[Suki Off-line Mode]** Halo kawan belajarku! Suki beralih ke mode offline ceria demi membimbing belajarmu tentang **"${topic}"**. Mari cermati kartu panduan di sebelah kiri dan kerjakan kuisnya untuk mengumpulkan **+50 EXP** emas! ✨`;
     }
   }
 
@@ -95,8 +124,7 @@ Ayo tuntaskan materi pembelajaran di panel sebelah kiri dan selesaikan kuis di b
       const { messages, topic, taskContext } = req.body;
       
       if (!ai) {
-        const fallbackText = generateLocalChatResponse(messages || [], topic || "Belajar Bahasa");
-        return res.json({ text: fallbackText });
+        return res.json({ text: "⚠️ Sistem AI Gemini belum terkoneksi. Mohon buka pengaturan **Secrets** di AI Studio dan tambahkan **GEMINI_API_KEY** Anda agar Suki dapat membantu secara langsung." });
       }
 
       const systemPrompt = `You are StudySuki AI, an engaging, supportive, and clever bilingual (Indonesian/English, predominantly Indonesian) AI tutor for students.
@@ -121,10 +149,41 @@ Provide insightful, concise, clear, and easy-to-understand explanations. Include
 
       res.json({ text: response.text });
     } catch (error: any) {
-      console.warn("Gemini Study Tutor API rate-limited or failed. Using highly smart dynamic local Indonesian fallback explainer.", error.message || error);
-      const fallbackText = generateLocalChatResponse(req.body.messages || [], req.body.topic || "Belajar Bahasa");
+      const errMsg = error.message || String(error);
+      if (error.status === "RESOURCE_EXHAUSTED" || error.status === 429 || errMsg.includes("quota") || errMsg.includes("429")) {
+        console.warn(`[Gemini API Quota Exceeded] 429 - Falling back gracefully to rich local smart companion for: "${req.body.topic || 'unknown'}"`);
+      } else {
+        console.warn("Gemini Study Tutor API failed. Falling back to local smart engine.", errMsg);
+      }
+      
+      const { messages, topic, taskContext } = req.body;
+      const fallbackText = generateLocalChatResponse(messages || [], topic || "Bahasa & Budaya", taskContext || "");
       res.json({ text: fallbackText });
     }
+  });
+
+  // Secure API endpoint to deliver Firebase configuration without hardcoding it in client-side HTML/JS source code
+  app.get("/api/firebase-config", (req: any, res: any) => {
+    try {
+      const configPath = path.join(process.cwd(), "firebase-applet-config.json");
+      if (fs.existsSync(configPath)) {
+        const configRaw = fs.readFileSync(configPath, "utf-8");
+        return res.json(JSON.parse(configRaw));
+      }
+    } catch (err) {
+      console.error("Failed to read firebase-applet-config.json:", err);
+    }
+    // Return empty configuration gracefully if not present
+    res.json({
+      projectId: "",
+      appId: "",
+      apiKey: "",
+      authDomain: "",
+      firestoreDatabaseId: "",
+      storageBucket: "",
+      messagingSenderId: "",
+      measurementId: ""
+    });
   });
 
   // Dynamic Local Indonesian Chess Coaching Advisor (acts as robust offline fallback when rate-limited)
@@ -271,8 +330,7 @@ Provide insightful, concise, clear, and easy-to-understand explanations. Include
     const { boardState, movesHistory, pgn, difficulty } = req.body;
     try {
       if (!ai) {
-        const localAdvice = generateLocalChessAdvice(boardState, movesHistory, difficulty);
-        return res.json({ advice: localAdvice });
+        return res.json({ advice: "⚠️ AI Gemini tidak terdeteksi. Harap pasang **GEMINI_API_KEY** di pengaturan Secrets Anda untuk mendapatkan nasihat taktis." });
       }
 
       const prompt = `We are playing chess. Difficulty: "${difficulty || 'Sedang'}"
@@ -292,9 +350,58 @@ Provide a brief, clever commentary or tactical advice in Indonesian (max 2 sente
 
       res.json({ advice: response.text });
     } catch (error: any) {
-      console.warn("Chess adviser API rate-limited or failed. Using highly smart dynamic local Indonesian fallback evaluator.", error.message || error);
-      const fallbackAdvice = generateLocalChessAdvice(boardState, movesHistory, difficulty);
-      res.json({ advice: fallbackAdvice });
+      const errMsg = error.message || String(error);
+      if (error.status === "RESOURCE_EXHAUSTED" || error.status === 429 || errMsg.includes("quota") || errMsg.includes("429")) {
+        console.warn("[Gemini Chess Quota Exceeded] 429 - Falling back gracefully to Chess Advisor local engine.");
+      } else {
+        console.error("Chess adviser API error. Falling back to local advisor.", errMsg);
+      }
+      const advice = generateLocalChessAdvice(boardState, movesHistory, difficulty);
+      res.json({ advice: `[Local Advisor] ${advice}` });
+    }
+  });
+
+  // API Route for Speech Practice AI Analysis
+  app.post("/api/analyze-speech", async (req: any, res: any) => {
+    const { spokenText, targetPhrase, langCode } = req.body;
+    try {
+      if (!ai) {
+        return res.json({ error: "Gemini API key is not configured." });
+      }
+
+      const systemPrompt = `You are an expert language teacher.
+Compare the user's spoken text ("${spokenText}") with the target phrase ("${targetPhrase}").
+Evaluate their pronunciation/accuracy.
+Provide:
+1. A boolean 'isCorrect' (80% or higher).
+2. A 'feedback' message, explaining specifically what they got wrong if incorrect, in Indonesian, for a language learner.
+Format as JSON: { "isCorrect": boolean, "feedback": string, "accuracyScore": number }`;
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3.5-flash",
+        contents: [{role: "user", parts: [{text: `Spoken: "${spokenText}", Target: "${targetPhrase}"`}]}],
+        config: {
+          systemInstruction: systemPrompt,
+          temperature: 0.2,
+          responseMimeType: "application/json"
+        }
+      });
+      
+      res.json(JSON.parse(response.text));
+    } catch (error: any) {
+      const errMsg = error.message || String(error);
+      if (error.status === "RESOURCE_EXHAUSTED" || error.status === 429 || errMsg.includes("quota") || errMsg.includes("429")) {
+        console.warn("[Gemini Speech Quota Exceeded] 429 - Falling back gracefully to localized speech analysis matcher.");
+      } else {
+        console.error("Speech analysis error. Falling back to simple matching.", errMsg);
+      }
+      // Basic local matching if AI fails
+      const similarity = spokenText.toLowerCase() === targetPhrase.toLowerCase() ? 100 : 70;
+      res.json({ 
+        isCorrect: similarity >= 80, 
+        feedback: "Koneksi AI sedang sibuk. Pastikan pelafalanmu jelas dan ikuti contoh suara yang tersedia!", 
+        accuracyScore: similarity 
+      });
     }
   });
 
